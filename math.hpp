@@ -97,10 +97,10 @@ static std::vector<StateType> RK4(const StateType& state0, const std::vector<Rea
         const Real h = t[i] - t[i-1];
         
         // RK4 algorithm
-        const StateType k1 = ode_func(t[i], states[i-1]);
-        const StateType k2 = ode_func(t[i] + 0.5*h, states[i-1] + 0.5*h*k1);
-        const StateType k3 = ode_func(t[i] + 0.5*h, states[i-1] + 0.5*h*k2);
-        const StateType k4 = ode_func(t[i] + h, states[i-1] + h*k3);
+        const StateType k1 = ode_func(t[i-1], states[i-1]);
+        const StateType k2 = ode_func(t[i-1] + 0.5*h, states[i-1] + 0.5*h*k1);
+        const StateType k3 = ode_func(t[i-1] + 0.5*h, states[i-1] + 0.5*h*k2);
+        const StateType k4 = ode_func(t[i-1] + h, states[i-1] + h*k3);
 
         states[i] = states[i-1] + h*(k1 + 2*k2 + 2*k3 + k4) / 6.0;
     }
@@ -127,10 +127,10 @@ static std::vector<StateType> RK4(const StateType& state0, const std::vector<Rea
         const Real h = t[i] - t[i-1];
         
         // RK4 algorithm
-        const StateType k1 = ode_func(t[i], states[i-1], params);
-        const StateType k2 = ode_func(t[i] + 0.5*h, states[i-1] + 0.5*h*k1, params);
-        const StateType k3 = ode_func(t[i] + 0.5*h, states[i-1] + 0.5*h*k2, params);
-        const StateType k4 = ode_func(t[i] + h, states[i-1] + h*k3, params);
+        const StateType k1 = ode_func(t[i-1], states[i-1], params);
+        const StateType k2 = ode_func(t[i-1] + 0.5*h, states[i-1] + 0.5*h*k1, params);
+        const StateType k3 = ode_func(t[i-1] + 0.5*h, states[i-1] + 0.5*h*k2, params);
+        const StateType k4 = ode_func(t[i-1] + h, states[i-1] + h*k3, params);
 
         states[i] = states[i-1] + h*(k1 + 2*k2 + 2*k3 + k4) / 6.0;
     }

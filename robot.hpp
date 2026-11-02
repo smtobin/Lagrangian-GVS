@@ -4,6 +4,7 @@
 #include "math.hpp"
 
 #include <functional>
+#include <iostream>
 
 struct ContinuumRobotState
 {
@@ -82,6 +83,23 @@ struct ContinuumRobotState
 ContinuumRobotState operator*(Real s, const ContinuumRobotState& state)
 {
     return state*s;
+}
+
+std::ostream& operator<<(std::ostream& os, const ContinuumRobotState& state)
+{
+    os << "ContinuumRobotState {\n"
+       << "  n  = " << state.n << "\n"
+       << "  T  =\n" << state.T << "\n"
+       << "  J  =\n" << state.J << "\n"
+       << "  a  =\n" << state.a.transpose() << "\n"
+       << "  M  =\n" << state.M << "\n"
+       << "  c  =\n" << state.c.transpose() << "\n"
+       << "  Q  =\n" << state.Q.transpose() << "\n"
+       << "  PE = " << state.PE << "\n"
+       << "  KE = " << state.KE << "\n"
+       << "}";
+
+    return os;
 }
 
 /////////////////////////////////////////////////////////////////////////////////////
@@ -176,13 +194,16 @@ public:
 
         // initialize integration points for integration along robot length
         for (unsigned i = 0; i < _s_ips.size(); i++)
+        {
             _s_ips[i] = Real(i) / Real(_s_ips.size() - 1) * _L;
+        }
 
         // compute the stiffness matrix
         std::vector<MatXr> output = Math::RK4<MatXr>(MatXr::Zero(n,n), _s_ips, 
             [&](Real s, const MatXr& Kcur) {
                 StrainBasisMat Phi = _strain_basis(s);
-                return Phi.transpose() * _Kd * Phi;
+                MatXr Kp = Phi.transpose() * _Kd * Phi;
+                return Kp;
             });
         _K = output.back();
         
@@ -233,8 +254,9 @@ public:
 
     ImplicitMidpointOutput implicitMidpointStep(const VecXr& qk, const VecXr& qdk, Real tk, Real h, Real tol=1e-4)
     {
-        VecXr q = qk + h/2*qdk;
-        VecXr qd = qdk;
+        /** TODO: (11/02/26) Make this function NOT change _q and _qdot. I think q and qd should be constant params given to dynamics ODE. */
+        _q = qk + h/2*qdk;
+        _qdot = qdk;
 
         ImplicitMidpointOutput midpoint_output;
 
@@ -252,11 +274,11 @@ public:
             VecXr qd_new = H.partialPivLu().solve(b);
             VecXr q_new = qk + h/2.0*qd_new;
 
-            Real qnorm = (q_new - q).norm()/_n;
-            Real qdnorm = (qd_new - qd).norm()/_n;
+            Real qnorm = (q_new - _q).norm()/_n;
+            Real qdnorm = (qd_new - _qdot).norm()/_n;
 
-            q = q_new;
-            qd = qd_new;
+            _q = q_new;
+            _qdot = qd_new;
             midpoint_output.iter_to_convergence = j;
             midpoint_output.tip_state = end;
             if (qnorm < 1e-4 && qdnorm < 1e-4)
@@ -264,8 +286,8 @@ public:
         }
 
         midpoint_output.n = _n;
-        midpoint_output.q = 2*q - qk;
-        midpoint_output.qdot = 2*qd - qdk;
+        midpoint_output.q = 2*_q - qk;
+        midpoint_output.qdot = 2*_qdot - qdk;
         midpoint_output.t = tk + h;
 
         return midpoint_output;
@@ -278,11 +300,14 @@ public:
 
         Real t = 0;
         Real h = 0.02;
+
+        VecXr qk = _q;
+        VecXr qdk = _qdot;
         for (unsigned i = 0; i < num_steps; i++)
         {
-            ImplicitMidpointOutput output = implicitMidpointStep(_q, _qdot, t, h);
-            _q = output.q;
-            _qdot = output.qdot;
+            ImplicitMidpointOutput output = implicitMidpointStep(qk, qdk, t, h);
+            qk = output.q;
+            qdk = output.qdot;
             t = output.t;
 
             KEs[i] = output.tip_state.KE;
