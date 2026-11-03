@@ -28,7 +28,7 @@ int main()
         return Phi;
     };
     
-    ContinuumRobot robot(
+    ContinuumRobot robot1(
         r,
         L,
         xi_star,
@@ -39,5 +39,8 @@ int main()
         n
     );
 
-    robot.simulateRobot(200);
+    ContinuumRobot robot2 = robot1;
+
+    robot1.simulateRobot(200, false, 1e-8);  // without C
+    robot2.simulateRobot(200, true, 1e-8);   // with C
 }

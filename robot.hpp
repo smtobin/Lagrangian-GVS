@@ -2,105 +2,9 @@
 
 #include "common.hpp"
 #include "math.hpp"
+#include "state.hpp"
 
-#include <functional>
-#include <iostream>
-
-struct ContinuumRobotState
-{
-    /** Number of generalized coordinates */
-    unsigned n;
-    /** Pose */
-    Mat4r T;
-    /** Pose Jacobian (6xn) */
-    StrainBasisMat J;
-    /** Jdot * qdot (?) */
-    Vec6r a;
-    /** Mass matrix (nxn) */
-    MatXr M;
-    /** Coriolis terms (C*qdot), (nx1) */
-    VecXr c;
-    /** Generalized force (nx1) */
-    VecXr Q;
-    /** Potential energy */
-    Real PE;
-    /** Kinetic energy */
-    Real KE;
-
-    ContinuumRobotState() = default;
-
-    ContinuumRobotState(unsigned n_)
-    {
-        n = n_;
-        T = Mat4r::Identity();
-        J = StrainBasisMat::Zero(6, n);
-        a = Vec6r::Zero();
-        M = MatXr::Zero(n, n);
-        c = VecXr::Zero(n);
-        Q = VecXr::Zero(n);
-        PE = 0;
-        KE = 0;
-    }
-
-    ContinuumRobotState(
-        unsigned n_,
-        const Mat4r& T_,
-        const StrainBasisMat& J_,
-        const Vec6r& a_,
-        const MatXr& M_,
-        const VecXr& c_,
-        const VecXr& Q_,
-        Real PE_,
-        Real KE_)
-        : n(n_), T(T_), J(J_), a(a_),
-        M(M_), c(c_), Q(Q_), PE(PE_), KE(KE_)
-    {}
-
-    /** Overload operators for integration with RK4 */
-    ContinuumRobotState operator+(const ContinuumRobotState& o) const
-    {
-        assert(n == o.n);
-        return { n, T + o.T, J + o.J, a + o.a, M + o.M, c + o.c, Q + o.Q, PE + o.PE, KE + o.KE };
-    }
-
-    ContinuumRobotState operator-(const ContinuumRobotState& o) const
-    {
-        assert(n == o.n);
-        return { n, T - o.T, J - o.J, a - o.a, M - o.M, c - o.c, Q - o.Q, PE - o.PE, KE - o.KE };
-    }
-
-    ContinuumRobotState operator*(Real s) const
-    {
-        return { n, s*T, s*J, s*a, s*M, s*c, s*Q, s*PE, s*KE };
-    }
-
-    ContinuumRobotState operator/(Real s) const
-    {
-        return { n, T/s, J/s, a/s, M/s, c/s, Q/s, PE/s, KE/s };
-    }
-};
-
-ContinuumRobotState operator*(Real s, const ContinuumRobotState& state)
-{
-    return state*s;
-}
-
-std::ostream& operator<<(std::ostream& os, const ContinuumRobotState& state)
-{
-    os << "ContinuumRobotState {\n"
-       << "  n  = " << state.n << "\n"
-       << "  T  =\n" << state.T << "\n"
-       << "  J  =\n" << state.J << "\n"
-       << "  a  =\n" << state.a.transpose() << "\n"
-       << "  M  =\n" << state.M << "\n"
-       << "  c  =\n" << state.c.transpose() << "\n"
-       << "  Q  =\n" << state.Q.transpose() << "\n"
-       << "  PE = " << state.PE << "\n"
-       << "  KE = " << state.KE << "\n"
-       << "}";
-
-    return os;
-}
+#include <chrono>
 
 /////////////////////////////////////////////////////////////////////////////////////
 
@@ -111,6 +15,16 @@ struct ImplicitMidpointOutput
     VecXr qdot;
     Real t;
     ContinuumRobotState tip_state;
+    unsigned iter_to_convergence;
+};
+
+struct ImplicitMidpointOutputChristoffel
+{
+    unsigned n;
+    VecXr q;
+    VecXr qdot;
+    Real t;
+    ContinuumRobotStateChristoffel tip_state;
     unsigned iter_to_convergence;
 };
 
@@ -160,6 +74,7 @@ private:
 
     /** Pre-computed things for integration along length of robot. */
     ContinuumRobotState _state0;
+    ContinuumRobotStateChristoffel _state0_C;
     std::vector<Real> _s_ips;
 
 public:
@@ -179,6 +94,7 @@ public:
         , _strain_basis(strain_basis)
         , _n(n)
         , _state0(n)
+        , _state0_C(n)
         , _s_ips(30)
     {
         // initialize diagonal mass matrix
@@ -215,10 +131,8 @@ public:
         Vec6r xi = Phi*_q + _xi_star;
         Vec6r xidot = Phi*_qdot;
         Mat6r adxi = Math::se3_ad(xi);
-        Mat6r adxidot = Math::se3_ad(xidot);
         Vec6r V = state.J*_qdot;
         Mat6r adV = Math::se3_ad(V);
-        Mat6r adbarMV = Math::se3_adbar(_Md*V);
 
         Mat3r R = state.T.block<3,3>(0,0);
         Vec6r wb = Vec6r::Zero();
@@ -244,6 +158,49 @@ public:
             ap,
             Mp,
             cp,
+            Qp,
+            PEp,
+            KEp
+        };
+
+        return derivative;
+    }
+
+    ContinuumRobotStateChristoffel dynamicsODEChristoffel(Real s, const ContinuumRobotStateChristoffel& state)
+    {
+        StrainBasisMat Phi = _strain_basis(s);
+        Vec6r xi = Phi*_q + _xi_star;
+        Vec6r xidot = Phi*_qdot;
+        Mat6r adxi = Math::se3_ad(xi);
+        Mat6r adxidot = Math::se3_ad(xidot);
+        Vec6r V = state.J*_qdot;
+        Mat6r adV = Math::se3_ad(V);
+        Mat6r adbarMV = Math::se3_adbar(_Md*V);
+
+        Mat3r R = state.T.block<3,3>(0,0);
+        Vec6r wb = Vec6r::Zero();
+        wb.head<3>() = R.transpose() * _a_grav * _rho * _area;
+
+        Mat4r Tp = state.T * Math::se3_hat(xi);
+        StrainBasisMat Jp = Phi - adxi*state.J;
+        MatXr Mp = state.J.transpose() * _Md * state.J;
+        StrainBasisMat Ap = adV*Phi - adxidot*state.J - adxi*state.A;
+        MatXr Cp = 0.5*state.J.transpose() * (_Md*state.A - adV.transpose()*_Md*state.J + adbarMV*state.J);
+        VecXr Qp = state.J.transpose() * wb;
+
+        Vec3r p = state.T.block<3,1>(0,3);
+        Vec6r xi_diff = xi - _xi_star;
+        Real PEp = 0.5*xi_diff.transpose() * _Kd * xi_diff;
+        PEp += _rho * _area * p.dot(_a_grav);
+        Real KEp = 0.5*V.transpose()*_Md*V;
+
+        ContinuumRobotStateChristoffel derivative {
+            state.n,
+            Tp,
+            Jp,
+            Ap,
+            Mp,
+            Cp,
             Qp,
             PEp,
             KEp
@@ -281,7 +238,7 @@ public:
             _qdot = qd_new;
             midpoint_output.iter_to_convergence = j;
             midpoint_output.tip_state = end;
-            if (qnorm < 1e-4 && qdnorm < 1e-4)
+            if (qnorm < tol && qdnorm < tol)
                 break;
         }
 
@@ -293,7 +250,50 @@ public:
         return midpoint_output;
     }
 
-    void simulateRobot(unsigned num_steps)
+    ImplicitMidpointOutputChristoffel implicitMidpointStepChristoffel(const VecXr& qk, const VecXr& qdk, Real tk, Real h, Real tol=1e-4)
+    {
+        /** TODO: (11/02/26) Make this function NOT change _q and _qdot. I think q and qd should be constant params given to dynamics ODE. */
+        _q = qk + h/2*qdk;
+        _qdot = qdk;
+
+        ImplicitMidpointOutputChristoffel midpoint_output;
+
+        unsigned MAX_ITER = 20;
+        for (unsigned j = 0; j < MAX_ITER; j++)
+        {
+            // integrate ODE to get state along robot
+            std::vector<ContinuumRobotStateChristoffel> output = 
+                Math::RK4<ContinuumRobotStateChristoffel>(_state0_C, _s_ips, [this](Real s, const ContinuumRobotStateChristoffel& state) 
+                {return this->dynamicsODEChristoffel(s, state);});
+
+            const ContinuumRobotStateChristoffel& end = output.back();
+
+            MatXr H = 2.0/h * end.M + 2*end.C + h/2.0*_K;
+            VecXr b = 2.0/h * end.M * qdk + end.C*_qdot - _K*qk + end.Q;
+
+            VecXr qd_new = H.partialPivLu().solve(b);
+            VecXr q_new = qk + h/2.0*qd_new;
+
+            Real qnorm = (q_new - _q).norm()/_n;
+            Real qdnorm = (qd_new - _qdot).norm()/_n;
+
+            _q = q_new;
+            _qdot = qd_new;
+            midpoint_output.iter_to_convergence = j;
+            midpoint_output.tip_state = end;
+            if (qnorm < tol && qdnorm < tol)
+                break;
+        }
+
+        midpoint_output.n = _n;
+        midpoint_output.q = 2*_q - qk;
+        midpoint_output.qdot = 2*_qdot - qdk;
+        midpoint_output.t = tk + h;
+
+        return midpoint_output;
+    }
+
+    void simulateRobot(unsigned num_steps, bool use_christoffel=false, Real tol=1e-4)
     {
         std::vector<Real> KEs(num_steps);
         std::vector<Real> PEs(num_steps);
@@ -303,21 +303,40 @@ public:
 
         VecXr qk = _q;
         VecXr qdk = _qdot;
+
+        auto t1 = std::chrono::high_resolution_clock::now();
         for (unsigned i = 0; i < num_steps; i++)
         {
-            ImplicitMidpointOutput output = implicitMidpointStep(qk, qdk, t, h);
-            qk = output.q;
-            qdk = output.qdot;
-            t = output.t;
+            if (use_christoffel)
+            {
+                ImplicitMidpointOutputChristoffel output = implicitMidpointStepChristoffel(qk, qdk, t, h, tol);
+                qk = output.q;
+                qdk = output.qdot;
+                t = output.t;
 
-            KEs[i] = output.tip_state.KE;
-            PEs[i] = output.tip_state.PE;
-        }
+                KEs[i] = output.tip_state.KE;
+                PEs[i] = output.tip_state.PE;
+            }
+            else
+            {
+                ImplicitMidpointOutput output = implicitMidpointStep(qk, qdk, t, h, tol);
+                qk = output.q;
+                qdk = output.qdot;
+                t = output.t;
 
-        for (unsigned i = 0; i < num_steps; i++)
-        {
-            std::cout << "KE " << i << ": " << KEs[i] << std::endl;
+                KEs[i] = output.tip_state.KE;
+                PEs[i] = output.tip_state.PE;
+            }
+            
         }
+        auto t2 = std::chrono::high_resolution_clock::now();
+        double elapsed_ms = std::chrono::duration_cast<std::chrono::nanoseconds>(t2 - t1).count()/1.0e6;
+        std::cout << "Simulating " << num_steps << " steps with tolerance " << tol << " took " << elapsed_ms << " ms." << std::endl;
+
+        // for (unsigned i = 0; i < num_steps; i++)
+        // {
+        //     std::cout << "KE " << i << ": " << KEs[i] << std::endl;
+        // }
     }
 
 

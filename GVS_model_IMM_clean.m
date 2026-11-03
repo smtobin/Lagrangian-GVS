@@ -175,11 +175,16 @@ function GVS_model_IMM_clean()
             %[S,X]=ode45(@DynamicsODE_with_C,0:.02:L,x0);
             [S,X]=RK4(@DynamicsODE_with_C,0,L,x0,30);
             x=X(end,:);
-            Tend=reshape(x(1:16),4,4);  x(1:16)=[];
-            J=reshape(x(1:6*n),6,n);    x(1:6*n)=[];
-            A=reshape(x(1:6*n),6,n);    x(1:6*n)=[];
-            M=reshape(x(1:n*n),n,n);    x(1:n*n)=[];
-            C=reshape(x(1:n*n),n,n);    x(1:n*n)=[];
+            Tend=reshape(x(1:16),4,4);
+            x(1:16)=[];
+            J=reshape(x(1:6*n),6,n);
+            x(1:6*n)=[];
+            A=reshape(x(1:6*n),6,n);
+            x(1:6*n)=[];
+            M=reshape(x(1:n*n),n,n);
+            x(1:n*n)=[];
+            C=reshape(x(1:n*n),n,n);
+            x(1:n*n)=[];
             Q=x(1:n).';                   %x(1:n)=[];
 
             H=2/h*M+2*C+h/2*K+B;
@@ -234,33 +239,33 @@ qd=zeros(n,1);
 global x0
 
 % Use these for the version with C
-% T0=eye(4);
-% J0=zeros(6,n);
-% A0=zeros(6,n);
-% M0=zeros(n,n);
-% C0=zeros(n,n);
-% Q0=zeros(n,1);
-% 
-% x0=[reshape(T0,16,1);
-%     reshape(J0,6*n,1);
-%     reshape(A0,6*n,1);
-%     reshape(M0,n*n,1);
-%     reshape(C0,n*n,1);
-%     reshape(Q0,n,1);0;0];
+T0=eye(4);
+J0=zeros(6,n);
+A0=zeros(6,n);
+M0=zeros(n,n);
+C0=zeros(n,n);
+Q0=zeros(n,1);
+
+x0=[reshape(T0,16,1);
+    reshape(J0,6*n,1);
+    reshape(A0,6*n,1);
+    reshape(M0,n*n,1);
+    reshape(C0,n*n,1);
+    reshape(Q0,n,1);0;0];
 
 
 %Use these for the version with c
-T0=eye(4);
-J0=zeros(6,n);
-a0=zeros(6,1);
-M0=zeros(n,n);
-c0=zeros(n,1);
-Q0=zeros(n,1);
-x0=[reshape(T0,16,1);
-    reshape(J0,6*n,1);
-    a0;
-    reshape(M0,n*n,1);
-    c0;Q0;0;0];
+% T0=eye(4);
+% J0=zeros(6,n);
+% a0=zeros(6,1);
+% M0=zeros(n,n);
+% c0=zeros(n,1);
+% Q0=zeros(n,1);
+% x0=[reshape(T0,16,1);
+%     reshape(J0,6*n,1);
+%     a0;
+%     reshape(M0,n*n,1);
+%     c0;Q0;0;0];
 
 
 q0=zeros(n,1);
@@ -283,7 +288,7 @@ qd_list(:,1)=qd0;
 totalj=0;
 for k=1:N_steps
         
-        [qkp1,qdkp1,tkp1,X,j]=IMM_step(qk,qdk,tk,h);
+        [qkp1,qdkp1,tkp1,X,j]=IMM_step_C(qk,qdk,tk,h);
         
         q_list(:,k+1)=qkp1;
         qd_list(:,k+1)=qdkp1;
