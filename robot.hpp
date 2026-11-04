@@ -30,9 +30,8 @@ struct ImplicitMidpointOutputChristoffel
 
 /////////////////////////////////////////////////////////////////////////////////////
 
-class ContinuumRobot
+struct ContinuumRobot
 {
-private:
     /** Geometric properties */
     Real _r;        // radius
     Real _L;        // length
@@ -122,7 +121,16 @@ public:
                 return Kp;
             });
         _K = output.back();
-        
+    }
+
+    std::vector<Mat4r> integratePoseAlongLength(const std::vector<Real>& s, const VecXr& q = _q)
+    {
+        return Math::RK4<Mat4r>(Mat4r::Identity(), s, [&](Real s, const Mat4r& Tcur) {
+            StrainBasisMat Phi = _strain_basis(s);
+            Vec6r xi = Phi*q + _xi_star;
+            Mat4r Tp = Tcur * Math::se3_hat(xi);
+            return Tp;
+        });
     }
 
     ContinuumRobotState dynamicsODE(Real s, const ContinuumRobotState& state)
@@ -293,16 +301,20 @@ public:
         return midpoint_output;
     }
 
-    void simulateRobot(unsigned num_steps, bool use_christoffel=false, Real tol=1e-4)
+    std::vector<VecXr> simulateRobot(unsigned num_steps, Real h, bool use_christoffel=false, Real tol=1e-4)
     {
-        std::vector<Real> KEs(num_steps);
-        std::vector<Real> PEs(num_steps);
+        std::vector<VecXr> qs(num_steps+1);
+        std::vector<Real> KEs(num_steps+1);
+        std::vector<Real> PEs(num_steps+1);
 
         Real t = 0;
-        Real h = 0.02;
 
         VecXr qk = _q;
         VecXr qdk = _qdot;
+
+        KEs[0] = 0;
+        PEs[0] = 0;
+        qs[0] = _q;
 
         auto t1 = std::chrono::high_resolution_clock::now();
         for (unsigned i = 0; i < num_steps; i++)
@@ -314,8 +326,9 @@ public:
                 qdk = output.qdot;
                 t = output.t;
 
-                KEs[i] = output.tip_state.KE;
-                PEs[i] = output.tip_state.PE;
+                KEs[i+1] = output.tip_state.KE;
+                PEs[i+1] = output.tip_state.PE;
+                qs[i+1] = qk;
             }
             else
             {
@@ -324,8 +337,9 @@ public:
                 qdk = output.qdot;
                 t = output.t;
 
-                KEs[i] = output.tip_state.KE;
-                PEs[i] = output.tip_state.PE;
+                KEs[i+1] = output.tip_state.KE;
+                PEs[i+1] = output.tip_state.PE;
+                qs[i+1] = qk;
             }
             
         }
@@ -337,6 +351,8 @@ public:
         // {
         //     std::cout << "KE " << i << ": " << KEs[i] << std::endl;
         // }
+
+        return qs;
     }
 
 

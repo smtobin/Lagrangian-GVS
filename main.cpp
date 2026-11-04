@@ -41,6 +41,7 @@ int main()
 
     ContinuumRobot robot2 = robot1;
 
-    robot1.simulateRobot(200, false, 1e-8);  // without C
-    robot2.simulateRobot(200, true, 1e-8);   // with C
+    Real h = 0.02;
+    std::vector<VecXr> qs = robot1.simulateRobot(200, false, 1e-8);  // without C
+    // robot2.simulateRobot(200, true, 1e-8);   // with C
 }
