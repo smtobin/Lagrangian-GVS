@@ -123,7 +123,7 @@ public:
         _K = output.back();
     }
 
-    std::vector<Mat4r> integratePoseAlongLength(const std::vector<Real>& s, const VecXr& q = _q)
+    std::vector<Mat4r> integratePoseAlongLength(const std::vector<Real>& s, const VecXr& q)
     {
         return Math::RK4<Mat4r>(Mat4r::Identity(), s, [&](Real s, const Mat4r& Tcur) {
             StrainBasisMat Phi = _strain_basis(s);

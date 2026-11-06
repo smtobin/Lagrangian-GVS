@@ -3,6 +3,52 @@
 #include "common.hpp"
 #include "robot.hpp"
 
+#include <vtkSmartPointer.h>
+#include <vtkPolyData.h>
+#include <vtkPolyDataNormals.h>
+#include <vtkTriangle.h>
+#include <vtkActor.h>
+#include <vtkCamera.h>
+#include <vtkCubeSource.h>
+#include <vtkSphereSource.h>
+#include <vtkPlaneSource.h>
+#include <vtkHDRReader.h>
+#include <vtkImageFlip.h>
+#include <vtkImageReader2.h>
+#include <vtkImageReader2Factory.h>
+#include <vtkInteractorStyleTrackballCamera.h>
+#include <vtkLight.h>
+#include <vtkNamedColors.h>
+#include <vtkOpenGLRenderer.h>
+#include <vtkOpenGLTexture.h>
+#include <vtkPBRIrradianceTexture.h>
+#include <vtkPNGReader.h>
+#include <vtkPNGWriter.h>
+#include <vtkWindowToImageFilter.h>
+#include <vtkPolyDataMapper.h>
+#include <vtkPolyDataTangents.h>
+#include <vtkProperty.h>
+#include <vtkRenderWindow.h>
+#include <vtkRenderWindowInteractor.h>
+#include <vtkSkybox.h>
+#include <vtkTexture.h>
+#include <vtkTriangleFilter.h>
+
+#include <vtkSequencePass.h>
+#include <vtkShadowMapBakerPass.h>
+#include <vtkShadowMapPass.h>
+#include <vtkCameraPass.h>
+#include <vtkRenderPassCollection.h>
+#include <vtkRenderStepsPass.h>
+#include <vtkToneMappingPass.h>
+#include <vtkLightsPass.h>
+#include <vtkOpaquePass.h>
+#include <vtkTranslucentPass.h>
+#include <vtkImageShiftScale.h>
+#include <vtkDepthPeelingPass.h>
+
+#include <vtkCoordinate.h>
+
 /** Creates render geometry for continuum robot */
 struct ContinuumRobotGraphicsObject
 {
@@ -19,26 +65,60 @@ private:
     /** Integration points along robot - evenly spaced from 0 to L */
     std::vector<Real> _s_ips;
 
+    /** Whether or not to draw end caps */
+    bool _draw_end_caps;
+
+    /** Resolution of generated geometry */
+    int _cap_resolution;
+    int _tubular_resolution;
+
     /** VTK data */
+    vtkSmartPointer<vtkActor> _vtk_actor;
     vtkSmartPointer<vtkPolyData> _vtk_poly_data;
     vtkSmartPointer<vtkPolyDataNormals> _vtk_poly_data_normals;
     vtkSmartPointer<vtkPolyDataMapper> _vtk_poly_data_mapper;
 
 public:
-    ContinuumRobotGraphicsObject(unsigned num_samples_)
-        : num_samples(num_samples_)
+    ContinuumRobotGraphicsObject(ContinuumRobot* robot_, unsigned num_samples_)
+        : robot(robot_)
+        , num_samples(num_samples_)
         , _s_ips(num_samples)
+        , _draw_end_caps(false)
+        , _cap_resolution(10)
+        , _tubular_resolution(15)
     {
         for (unsigned i = 0; i < num_samples; i++)
         {
             _s_ips[i] = Real(i) / (num_samples - 1) * robot->_L;
         }
+
+        _vtk_poly_data = vtkSmartPointer<vtkPolyData>::New();
+        
+        vtkNew<vtkPolyDataMapper> data_mapper;
+        // smooth normals
+        vtkNew<vtkPolyDataNormals> normal_generator;
+        normal_generator->SetInputData(_vtk_poly_data);
+        normal_generator->SetFeatureAngle(30.0);
+        normal_generator->SplittingOff();
+        normal_generator->ConsistencyOn();
+        normal_generator->ComputePointNormalsOn();
+        normal_generator->ComputeCellNormalsOff();
+        normal_generator->Update();
+
+        data_mapper->SetInputConnection(normal_generator->GetOutputPort());
+
+        _generateInitialPolyData();
+
+        _vtk_actor = vtkSmartPointer<vtkActor>::New();
+        _vtk_actor->SetMapper(data_mapper);
     }
+
+    vtkSmartPointer<vtkActor> actor() { return _vtk_actor; }
 
     void _generateInitialPolyData()
     {
         // integrate initial robot state
-        std::vector<Mat4r> Ts = robot->integratePoseAlongLength(_s_ips);
+        std::vector<Mat4r> Ts = robot->integratePoseAlongLength(_s_ips, robot->_q);
 
         vtkNew<vtkPoints> points;
 
@@ -156,7 +236,7 @@ public:
         if (_draw_end_caps)
         {
             Vec3r base_pt = R_beg * Vec3r(0, 0, -robot->_r) + p_beg;
-            Vec3r end_pt = R_end * Vec3r(0, 0, _robot->_r) + p_end;
+            Vec3r end_pt = R_end * Vec3r(0, 0, robot->_r) + p_end;
             points->InsertNextPoint(base_pt.data());
             points->InsertNextPoint(end_pt.data());
         }
@@ -249,8 +329,8 @@ public:
         }
 
         // end cap
-        Mat3r R_end = nodes.back().orientation;
-        Vec3r p_end = nodes.back().position;
+        Mat3r R_end = Ts.back().block<3,3>(0,0);
+        Vec3r p_end = Ts.back().block<3,1>(0,3);
         if (_draw_end_caps)
         {
             for (int i = 0; i < _cap_resolution; i++)
@@ -310,6 +390,16 @@ struct Visualization
     vtkSmartPointer<vtkWindowToImageFilter> _window_to_image;
     vtkSmartPointer<vtkPNGWriter> _png_writer;
 
+    /** Graphics objects */
+    std::vector<ContinuumRobotGraphicsObject> _graphics_objects;
+
+    void displayWindow() { _render_window->Render(); }
+    void interactorStart() { _interactor->Start(); }
+
+    void addGraphicsObject(ContinuumRobot* robot, int num_samples)
+    {
+        _graphics_objects.emplace_back(robot, num_samples);
+    }
 
     void setup()
     {
@@ -317,9 +407,9 @@ struct Visualization
         _renderer = vtkSmartPointer<vtkOpenGLRenderer>::New();
         
         // add all the rods that may have been added before we set up
-        for (const auto& graphics_obj : _graphics_objects)
+        for (auto& graphics_obj : _graphics_objects)
         {
-            _renderer->AddActor(graphics_obj->actor());
+            _renderer->AddActor(graphics_obj.actor());
         }
         
 
@@ -334,74 +424,74 @@ struct Visualization
 
         // set focal point
         camera->SetFocalPoint(
-            _render_config.cameraFocalPoint()[0],
-            _render_config.cameraFocalPoint()[1],
-            _render_config.cameraFocalPoint()[2]
+            0,
+            0,
+            0
         );
 
         // position camera
         camera->SetPosition(
-            _render_config.cameraPosition()[0],
-            _render_config.cameraPosition()[1],
-            _render_config.cameraPosition()[2]
+            1,
+            1,
+            1
         );
 
         camera->SetViewUp(0, 1, 0);
         camera->SetClippingRange(0.01, 1000.0);
 
-        camera->SetParallelProjection(_render_config.cameraOrthographic());
+        camera->SetParallelProjection(false);
 
         //////////////////////////////////////////////////////////
         // Create HDR lighting (if specified in the config)
         /////////////////////////////////////////////////////////
 
-        std::optional<std::string> hdr_filename = _render_config.hdrImageFilename();
-        if (hdr_filename.has_value())
-        {
-            vtkNew<vtkTexture> hdr_texture;
-            vtkNew<vtkHDRReader> reader;
-            reader->SetFileName(hdr_filename.value().c_str());
-            vtkNew<vtkImageShiftScale> scale;
-            scale->SetInputConnection(reader->GetOutputPort());
-            scale->SetScale(_render_config.hdrScaling()); // darker HDRI
+        // std::optional<std::string> hdr_filename = _render_config.hdrImageFilename();
+        // if (hdr_filename.has_value())
+        // {
+        //     vtkNew<vtkTexture> hdr_texture;
+        //     vtkNew<vtkHDRReader> reader;
+        //     reader->SetFileName(hdr_filename.value().c_str());
+        //     vtkNew<vtkImageShiftScale> scale;
+        //     scale->SetInputConnection(reader->GetOutputPort());
+        //     scale->SetScale(_render_config.hdrScaling()); // darker HDRI
 
-            hdr_texture->SetInputConnection(scale->GetOutputPort());
-            hdr_texture->SetColorModeToDirectScalars();
-            hdr_texture->MipmapOn();
-            hdr_texture->InterpolateOn();
-            hdr_texture->SetInputConnection(scale->GetOutputPort());
+        //     hdr_texture->SetInputConnection(scale->GetOutputPort());
+        //     hdr_texture->SetColorModeToDirectScalars();
+        //     hdr_texture->MipmapOn();
+        //     hdr_texture->InterpolateOn();
+        //     hdr_texture->SetInputConnection(scale->GetOutputPort());
 
-            if (_render_config.createSkybox())
-            {
-                vtkNew<vtkSkybox> skybox;
-                skybox->SetTexture(hdr_texture);
-                skybox->SetFloorRight(0,0,1);
-                skybox->SetProjection(vtkSkybox::Sphere);
-                _renderer->AddActor(skybox);
-            }
+        //     if (_render_config.createSkybox())
+        //     {
+        //         vtkNew<vtkSkybox> skybox;
+        //         skybox->SetTexture(hdr_texture);
+        //         skybox->SetFloorRight(0,0,1);
+        //         skybox->SetProjection(vtkSkybox::Sphere);
+        //         _renderer->AddActor(skybox);
+        //     }
 
-            _renderer->UseImageBasedLightingOn();
-            _renderer->UseSphericalHarmonicsOff();
-            _renderer->SetEnvironmentTexture(hdr_texture, false);
-        }
+        //     _renderer->UseImageBasedLightingOn();
+        //     _renderer->UseSphericalHarmonicsOff();
+        //     _renderer->SetEnvironmentTexture(hdr_texture, false);
+        // }
         
 
         ////////////////////////////////////////////////////////
         // Add lights
         ////////////////////////////////////////////////////////
 
-        vtkNew<vtkLight> light;
-        light->SetLightTypeToSceneLight();
-        light->SetPositional(true);
-        Vec3r light_pos = _render_config.sceneLightPosition();
-        Vec3r light_fp = _render_config.sceneLightFocalPoint();
-        light->SetPosition(light_pos[0], light_pos[1], light_pos[2]);
-        light->SetFocalPoint(light_fp[0], light_fp[1], light_fp[2]);
-        light->SetConeAngle(45);             
-        light->SetColor(1.0, 1.0, 1.0);
-        light->SetIntensity(1.0);
-        light->SetShadowAttenuation(0.5);
-        _renderer->AddLight(light);
+        // vtkNew<vtkLight> light;
+        // light->SetLightTypeToSceneLight();
+        // light->SetPositional(true);
+        // Vec3r light_pos = _render_config.sceneLightPosition();
+        // Vec3r light_fp = _render_config.sceneLightFocalPoint();
+        // light->SetPosition(light_pos[0], light_pos[1], light_pos[2]);
+        // light->SetFocalPoint(light_fp[0], light_fp[1], light_fp[2]);
+        // light->SetConeAngle(45);             
+        // light->SetColor(1.0, 1.0, 1.0);
+        // light->SetIntensity(1.0);
+        // light->SetShadowAttenuation(0.5);
+        // _renderer->AddLight(light);
 
 
         //////////////////////////////////////////////////////
@@ -409,14 +499,13 @@ struct Visualization
         //////////////////////////////////////////////////////
         _render_window = vtkSmartPointer<vtkRenderWindow>::New();
         _render_window->AddRenderer(_renderer);
-        _render_window->SetSize(_render_config.windowWidth(), _render_config.windowHeight());
-        _render_window->SetWindowName("Rod Test");
+        _render_window->SetSize(800, 800);
+        _render_window->SetWindowName("Simulation Playback");
 
         _interactor = vtkSmartPointer<vtkRenderWindowInteractor>::New();
-        // vtkNew<vtkInteractorStyleTrackballCamera> style;
-        vtkNew<CustomVTKInteractorStyle> style;
+        vtkNew<vtkInteractorStyleTrackballCamera> style;
+        // vtkNew<CustomVTKInteractorStyle> style;
         style->AutoAdjustCameraClippingRangeOff();
-        style->registerSimulation(sim);
         _interactor->SetInteractorStyle(style);
         _interactor->SetRenderWindow(_render_window);
         
@@ -465,25 +554,25 @@ struct Visualization
         _renderer->SetPass(cameraP);
 
         // if rendering for video, set up the window-to-image and PNG writer
-        if (_render_config.renderForVideo())
-        {
-            _window_to_image = vtkSmartPointer<vtkWindowToImageFilter>::New();
-            _window_to_image->SetInput(_render_window);
-            _window_to_image->SetInputBufferTypeToRGBA();
-            _window_to_image->ReadFrontBufferOff();
+        // if (_render_config.renderForVideo())
+        // {
+        //     _window_to_image = vtkSmartPointer<vtkWindowToImageFilter>::New();
+        //     _window_to_image->SetInput(_render_window);
+        //     _window_to_image->SetInputBufferTypeToRGBA();
+        //     _window_to_image->ReadFrontBufferOff();
 
-            _png_writer = vtkSmartPointer<vtkPNGWriter>::New();
-            _png_writer->SetInputConnection(_window_to_image->GetOutputPort());
+        //     _png_writer = vtkSmartPointer<vtkPNGWriter>::New();
+        //     _png_writer->SetInputConnection(_window_to_image->GetOutputPort());
 
-            // enable offscreen rendering
-            _render_window->SetOffScreenRendering(true);
-        }
+        //     // enable offscreen rendering
+        //     _render_window->SetOffScreenRendering(true);
+        // }
 
-        vtkNew<vtkCallbackCommand> render_callback;
-        render_callback->SetCallback(GraphicsScene::renderCallback);
-        render_callback->SetClientData(this);
+        // vtkNew<vtkCallbackCommand> render_callback;
+        // render_callback->SetCallback(GraphicsScene::renderCallback);
+        // render_callback->SetClientData(this);
         _interactor->Initialize();
-        _interactor->AddObserver(vtkCommand::TimerEvent, render_callback);
-        _interactor->CreateRepeatingTimer(5);
+        // _interactor->AddObserver(vtkCommand::TimerEvent, render_callback);
+        // _interactor->CreateRepeatingTimer(5);
     }
 };

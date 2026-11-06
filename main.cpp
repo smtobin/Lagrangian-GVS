@@ -1,5 +1,6 @@
 #include "common.hpp"
 #include "robot.hpp"
+#include "visualization.hpp"
 
 int main()
 {
@@ -42,6 +43,12 @@ int main()
     ContinuumRobot robot2 = robot1;
 
     Real h = 0.02;
-    std::vector<VecXr> qs = robot1.simulateRobot(200, false, 1e-8);  // without C
+    std::vector<VecXr> qs = robot1.simulateRobot(200, h, false, 1e-8);  // without C
     // robot2.simulateRobot(200, true, 1e-8);   // with C
+
+    Visualization viz;
+    viz.addGraphicsObject(&robot1, 30);
+    viz.setup();
+    viz.displayWindow();
+    viz.interactorStart();
 }
